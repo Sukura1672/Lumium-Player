@@ -1,0 +1,43 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Download libmpv
+        shell: pwsh
+        run: |
+          $rel = Invoke-RestMethod "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
+          $asset = $rel.assets | Where-Object { $_.name -match '^mpv-dev-x86_64-\d' } | Select-Object -First 1
+          Invoke-WebRequest $asset.browser_download_url -OutFile mpv-dev.7z
+          7z x mpv-dev.7z -ompv-dev -y
+          $dll = Get-ChildItem mpv-dev -Recurse -Filter "libmpv-2.dll" | Select-Object -First 1
+          if (-not $dll) { $dll = Get-ChildItem mpv-dev -Recurse -Filter "mpv-2.dll" | Select-Object -First 1 }
+          Copy-Item $dll.FullName mpv-2.dll
+
+      - name: PyInstaller
+        run: pyinstaller --noconfirm --clean --windowed --name LumenPlayer --add-binary "mpv-2.dll;." main.py
+
+      - name: Inno Setup
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LumenPlayer-Setup
+          path: Output/LumenPlayer-Setup.exe

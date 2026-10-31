@@ -18,14 +18,31 @@ jobs:
       - name: Locate project folder
         shell: pwsh
         run: |
-          $spec = Get-ChildItem -Recurse -Filter LumenPlayer.spec |
-              Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          function Find-Spec($root) {
+              Get-ChildItem -Path $root -Recurse -File -Filter *.spec |
+                  Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          }
+          $spec = Find-Spec $env:GITHUB_WORKSPACE
           if (-not $spec) {
-              Write-Error "LumenPlayer.spec not found. Upload the project files (main.py, lumenplayer/, LumenPlayer.spec, ...) to the repository."
+              $zip = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter *.zip | Select-Object -First 1
+              if ($zip) {
+                  Write-Host "Extracting $($zip.Name)"
+                  $target = Join-Path $env:GITHUB_WORKSPACE "_src"
+                  Expand-Archive -Path $zip.FullName -DestinationPath $target -Force
+                  $spec = Find-Spec $target
+              }
+          }
+          if (-not $spec) {
+              Write-Host "Files found in the repository:"
+              Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File |
+                  Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+                  Select-Object -First 60 -ExpandProperty FullName | Write-Host
+              Write-Error "No .spec file found. Upload LumenPlayer-source.zip or the project files to the repository."
               exit 1
           }
-          Write-Host "Project folder: $($spec.DirectoryName)"
+          Write-Host "Project folder: $($spec.DirectoryName) (spec: $($spec.Name))"
           "APP_DIR=$($spec.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SPEC_FILE=$($spec.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install Python deps
         working-directory: ${{ env.APP_DIR }}
@@ -49,7 +66,8 @@ jobs:
 
       - name: PyInstaller
         working-directory: ${{ env.APP_DIR }}
-        run: pyinstaller --noconfirm --clean LumenPlayer.spec
+        shell: pwsh
+        run: pyinstaller --noconfirm --clean $env:SPEC_FILE
 
       - name: Inno Setup
         working-directory: ${{ env.APP_DIR }}

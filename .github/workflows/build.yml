@@ -17,15 +17,27 @@ jobs:
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
-          $win = Get-ChildItem -Path $root -Recurse -File -Filter window.py |
-              Where-Object { $_.FullName -notmatch '\\\.git\\' } |
-              Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          function Find-Window($base) {
+              Get-ChildItem -Path $base -Recurse -File -Filter window.py |
+                  Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+                  Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          }
+          $win = Find-Window $root
+          if (-not $win) {
+              $zip = Get-ChildItem -Path $root -Recurse -File -Filter *.zip | Select-Object -First 1
+              if ($zip) {
+                  Write-Host "Extracting $($zip.Name)"
+                  $target = Join-Path $root "_src"
+                  Expand-Archive -Path $zip.FullName -DestinationPath $target -Force
+                  $win = Find-Window $target
+              }
+          }
           if (-not $win) {
               Write-Host "Files found in the repository:"
               Get-ChildItem -Path $root -Recurse -File |
                   Where-Object { $_.FullName -notmatch '\\\.git\\' } |
                   Select-Object -First 80 -ExpandProperty FullName | Write-Host
-              Write-Error "window.py not found. Upload the project files to the repository."
+              Write-Error "window.py not found. Upload LumenPlayer-source.zip to the repository."
               exit 1
           }
           if ($win.Directory.Name -eq 'lumenplayer') { $app = $win.Directory.Parent.FullName } else { $app = $win.DirectoryName }

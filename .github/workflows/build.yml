@@ -8,9 +8,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: lumen
     steps:
       - uses: actions/checkout@v4
 
@@ -18,10 +15,41 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Locate project folder
+        shell: pwsh
+        run: |
+          function Find-Spec($root) {
+              Get-ChildItem -Path $root -Recurse -File -Filter *.spec |
+                  Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          }
+          $spec = Find-Spec $env:GITHUB_WORKSPACE
+          if (-not $spec) {
+              $zip = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter *.zip | Select-Object -First 1
+              if ($zip) {
+                  Write-Host "Extracting $($zip.Name)"
+                  $target = Join-Path $env:GITHUB_WORKSPACE "_src"
+                  Expand-Archive -Path $zip.FullName -DestinationPath $target -Force
+                  $spec = Find-Spec $target
+              }
+          }
+          if (-not $spec) {
+              Write-Host "Files found in the repository:"
+              Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File |
+                  Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+                  Select-Object -First 80 -ExpandProperty FullName | Write-Host
+              Write-Error "No .spec file found. Upload LumenPlayer-source.zip or the project files to the repository."
+              exit 1
+          }
+          Write-Host "Project folder: $($spec.DirectoryName) (spec: $($spec.Name))"
+          "APP_DIR=$($spec.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SPEC_FILE=$($spec.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install Python deps
+        working-directory: ${{ env.APP_DIR }}
         run: pip install -r requirements.txt
 
       - name: Download libmpv
+        working-directory: ${{ env.APP_DIR }}
         shell: pwsh
         run: |
           $rel = Invoke-RestMethod "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
@@ -33,9 +61,12 @@ jobs:
           Copy-Item $dll.FullName mpv-2.dll
 
       - name: PyInstaller
-        run: pyinstaller --noconfirm --clean LumenPlayer.spec
+        working-directory: ${{ env.APP_DIR }}
+        shell: pwsh
+        run: pyinstaller --noconfirm --clean $env:SPEC_FILE
 
       - name: Inno Setup
+        working-directory: ${{ env.APP_DIR }}
         run: |
           choco install innosetup -y --no-progress
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
@@ -43,4 +74,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: LumenPlayer-Setup
-          path: lumen/Output/LumenPlayer-Setup.exe
+          path: ${{ env.APP_DIR }}/Output/LumenPlayer-Setup.exe

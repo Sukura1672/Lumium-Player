@@ -2,8 +2,6 @@ name: Build Windows installer
 
 on:
   workflow_dispatch:
-  push:
-    tags: ["v*"]
 
 jobs:
   build:
@@ -15,38 +13,81 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Locate project folder
+      - name: Prepare project
         shell: pwsh
         run: |
-          function Find-Spec($root) {
-              Get-ChildItem -Path $root -Recurse -File -Filter *.spec |
-                  Sort-Object { $_.FullName.Length } | Select-Object -First 1
-          }
-          $spec = Find-Spec $env:GITHUB_WORKSPACE
-          if (-not $spec) {
-              $zip = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter *.zip | Select-Object -First 1
-              if ($zip) {
-                  Write-Host "Extracting $($zip.Name)"
-                  $target = Join-Path $env:GITHUB_WORKSPACE "_src"
-                  Expand-Archive -Path $zip.FullName -DestinationPath $target -Force
-                  $spec = Find-Spec $target
-              }
-          }
-          if (-not $spec) {
+          $root = $env:GITHUB_WORKSPACE
+          $win = Get-ChildItem -Path $root -Recurse -File -Filter window.py |
+              Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Sort-Object { $_.FullName.Length } | Select-Object -First 1
+          if (-not $win) {
               Write-Host "Files found in the repository:"
-              Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File |
+              Get-ChildItem -Path $root -Recurse -File |
                   Where-Object { $_.FullName -notmatch '\\\.git\\' } |
                   Select-Object -First 80 -ExpandProperty FullName | Write-Host
-              Write-Error "No .spec file found. Upload LumenPlayer-source.zip or the project files to the repository."
+              Write-Error "window.py not found. Upload the project files to the repository."
               exit 1
           }
-          Write-Host "Project folder: $($spec.DirectoryName) (spec: $($spec.Name))"
-          "APP_DIR=$($spec.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "SPEC_FILE=$($spec.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($win.Directory.Name -eq 'lumenplayer') { $app = $win.Directory.Parent.FullName } else { $app = $win.DirectoryName }
+          Write-Host "Project folder: $app"
+          Set-Location $app
+
+          if (-not (Test-Path lumenplayer/window.py)) {
+              Write-Host "Flat layout detected, restoring the lumenplayer package"
+              New-Item -ItemType Directory -Force lumenplayer | Out-Null
+              foreach ($m in 'app','animations','constants','engine','icons','library','panel','paths','preferences','theme','widgets','window','__init__') {
+                  if (Test-Path "$m.py") { Move-Item "$m.py" "lumenplayer/$m.py" -Force }
+              }
+          }
+          if (-not (Test-Path lumenplayer/__init__.py)) {
+              Set-Content -Path lumenplayer/__init__.py -Value '__version__ = "1.1.0"'
+          }
+
+          Set-Content -Path main.py -Encoding utf8 -Value @'
+          import sys
+
+          from lumenplayer.app import run
+
+          if __name__ == "__main__":
+              sys.exit(run(sys.argv))
+          '@
+
+          Set-Content -Path LumenPlayer.spec -Encoding utf8 -Value @'
+          import os
+
+          datas = [("icon.png", ".")] if os.path.exists("icon.png") else []
+          icon = "icon.ico" if os.path.exists("icon.ico") else None
+
+          a = Analysis(
+              ["main.py"],
+              binaries=[("mpv-2.dll", ".")],
+              datas=datas,
+              excludes=["tkinter", "unittest", "pydoc"],
+          )
+          pyz = PYZ(a.pure)
+          exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="LumenPlayer",
+                    console=False, icon=icon, upx=False)
+          coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="LumenPlayer")
+          '@
+
+          if (-not (Test-Path installer.iss)) {
+              Write-Error "installer.iss not found next to main.py"
+              exit 1
+          }
+          $iss = Get-Content installer.iss -Raw -Encoding utf8
+          if (-not (Test-Path icon.ico)) { $iss = $iss -replace '(?m)^SetupIconFile=.*\r?\n','' }
+          [IO.File]::WriteAllText("$app\installer.iss", $iss, (New-Object Text.UTF8Encoding $true))
+
+          Get-ChildItem | Select-Object -ExpandProperty Name | Write-Host
+          "APP_DIR=$app" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install Python deps
         working-directory: ${{ env.APP_DIR }}
-        run: pip install -r requirements.txt
+        run: pip install PySide6 python-mpv pyinstaller
+
+      - name: Syntax check
+        working-directory: ${{ env.APP_DIR }}
+        run: python -m compileall -q lumenplayer main.py
 
       - name: Download libmpv
         working-directory: ${{ env.APP_DIR }}
@@ -62,8 +103,7 @@ jobs:
 
       - name: PyInstaller
         working-directory: ${{ env.APP_DIR }}
-        shell: pwsh
-        run: pyinstaller --noconfirm --clean $env:SPEC_FILE
+        run: pyinstaller --noconfirm --clean LumenPlayer.spec
 
       - name: Inno Setup
         working-directory: ${{ env.APP_DIR }}
